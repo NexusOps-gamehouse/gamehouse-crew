@@ -17,6 +17,13 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-websocket'
 
+    /*
+     * user 서비스 호출(UserClient). 닉네임을 user_svc.users 에서 직접 SELECT 하던 것을
+     * /internal/users 호출로 바꾸면서 필요해졌다 — duo_crew 계정에는 user_svc 권한이
+     * 없어 그 쿼리는 항상 permission denied 였다. match 도 같은 방식으로 user 를 부른다.
+     */
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
     // RabbitMQ STOMP External Broker(Relay) 연동을 위한 Netty 라이브러리 추가
     implementation 'io.projectreactor.netty:reactor-netty'
 

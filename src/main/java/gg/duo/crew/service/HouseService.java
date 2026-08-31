@@ -4,13 +4,16 @@ import gg.duo.common.exception.BusinessException;
 import gg.duo.common.exception.ErrorCode;
 import gg.duo.crew.domain.house.*;
 import gg.duo.crew.dto.HouseDto;
+import gg.duo.crew.client.UserClient;
 import gg.duo.crew.event.publisher.CrewEventPublisher;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -19,17 +22,24 @@ public class HouseService {
     private final HouseRepository houseRepository;
     private final HouseMemberRepository houseMemberRepository;
     private final CrewEventPublisher eventPublisher;
-    private final JdbcTemplate jdbcTemplate;
+    private final UserClient userClient;
 
     // ---------------------------------------------------------------- 조회
 
     @Transactional(readOnly = true)
     public List<HouseDto.Summary> list(Long viewerId) {
-        return houseRepository.findAllWithMembers().stream()
+        List<House> houses = houseRepository.findAllWithMembers();
+
+        // 방장 닉네임을 한 번에 받아온다. House 마다 한 번씩 물으면 HTTP 왕복이 House 수만큼이다.
+        Map<Long, String> nicknames = userClient.findNicknames(
+                houses.stream().map(House::getLeaderId).toList()
+        );
+
+        return houses.stream()
                 .map(h -> HouseDto.Summary.of(
                         h,
                         findMe(h, viewerId),
-                        resolveNickname(h.getLeaderId())
+                        nicknames.get(h.getLeaderId())
                 ))
                 .toList();
     }
@@ -43,14 +53,21 @@ public class HouseService {
     /** 내가 속한(승인된) House 들. */
     @Transactional(readOnly = true)
     public List<HouseDto.Summary> myHouses(Long userId) {
-        return houseMemberRepository
+        List<House> houses = houseMemberRepository
                 .findByUserIdAndStatus(userId, JoinStatus.APPROVED)
                 .stream()
                 .map(HouseMember::getHouse)
+                .toList();
+
+        Map<Long, String> nicknames = userClient.findNicknames(
+                houses.stream().map(House::getLeaderId).toList()
+        );
+
+        return houses.stream()
                 .map(h -> HouseDto.Summary.of(
                         h,
                         findMe(h, userId),
-                        resolveNickname(h.getLeaderId())
+                        nicknames.get(h.getLeaderId())
                 ))
                 .toList();
     }
@@ -159,12 +176,17 @@ public class HouseService {
         House house = loadWithMembers(houseId);
         requireManager(house, requesterId);
 
-        return houseMemberRepository
-                .findByHouseIdAndStatus(houseId, JoinStatus.PENDING)
-                .stream()
+        List<HouseMember> pending =
+                houseMemberRepository.findByHouseIdAndStatus(houseId, JoinStatus.PENDING);
+
+        Map<Long, String> nicknames = userClient.findNicknames(
+                pending.stream().map(HouseMember::getUserId).toList()
+        );
+
+        return pending.stream()
                 .map(member -> HouseDto.Member.of(
                         member,
-                        resolveNickname(member.getUserId())
+                        nicknames.get(member.getUserId())
                 ))
                 .toList();
     }
@@ -199,7 +221,7 @@ public class HouseService {
 
         return HouseDto.Member.of(
                 target,
-                resolveNickname(target.getUserId())
+                userClient.findNickname(target.getUserId())
         );
     }
 
@@ -226,7 +248,7 @@ public class HouseService {
 
         return HouseDto.Member.of(
                 target,
-                resolveNickname(target.getUserId())
+                userClient.findNickname(target.getUserId())
         );
     }
 
@@ -264,7 +286,7 @@ public class HouseService {
 
         return HouseDto.Member.of(
                 target,
-                resolveNickname(target.getUserId())
+                userClient.findNickname(target.getUserId())
         );
     }
 
@@ -309,46 +331,24 @@ public class HouseService {
 
     // ---------------------------------------------------------------- 내부
 
-    /**
-     * House API 응답에 사용자 닉네임을 포함하기 위해
-     * 인증된 userId 기준으로 user_svc의 닉네임을 조회한다.
-     */
-    private String resolveNickname(Long userId) {
-        if (userId == null) {
-            return null;
-        }
-
-        List<String> nicknames = jdbcTemplate.query(
-                """
-                SELECT nickname
-                FROM user_svc.users
-                WHERE id = ?
-                """,
-                (rs, rowNum) -> rs.getString("nickname"),
-                userId
-        );
-
-        if (nicknames.isEmpty()) {
-            return null;
-        }
-
-        String nickname = nicknames.get(0);
-
-        if (nickname == null || nickname.isBlank()) {
-            return null;
-        }
-
-        return nickname;
-    }
-
     private HouseDto.Detail detailOf(
             House house,
             HouseMember me
     ) {
+        // 상세 응답에 나가는 사람 = 방장 + 승인된 멤버. 그 id 만 모아 한 번에 묻는다.
+        Set<Long> userIds = new LinkedHashSet<>();
+        userIds.add(house.getLeaderId());
+        house.getMembers().stream()
+                .filter(m -> m.getStatus() == JoinStatus.APPROVED)
+                .map(HouseMember::getUserId)
+                .forEach(userIds::add);
+
+        Map<Long, String> nicknames = userClient.findNicknames(userIds);
+
         return HouseDto.Detail.of(
                 house,
                 me,
-                this::resolveNickname
+                nicknames::get
         );
     }
 

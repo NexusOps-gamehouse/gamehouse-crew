@@ -4,13 +4,14 @@ import gg.duo.crew.domain.chat.HouseChatMessage;
 import gg.duo.crew.domain.chat.HouseChatMessageRepository;
 import gg.duo.crew.dto.ChatMessageDto;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
+import gg.duo.crew.client.UserClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -18,13 +19,16 @@ public class HouseChatService {
 
     private final HouseChatMessageRepository chatMessageRepository;
     private final HouseService houseService;
-    private final JdbcTemplate jdbcTemplate;
+    private final UserClient userClient;
 
     /**
      * 인증된 userId를 기준으로 실제 사용자 닉네임을 조회한다.
      *
      * senderName을 클라이언트가 보내게 하지 않고 서버에서 직접 결정하므로,
      * 다른 사용자의 닉네임으로 메시지를 보내는 위조를 막는다.
+     *
+     * 예전에는 user 서비스의 테이블을 직접 SELECT 했다. crew 는 duo_crew 계정으로
+     * 접속하고 그 계정에는 남의 스키마 권한이 없어서 그 쿼리는 항상 실패했다.
      */
     private String resolveSenderName(Long senderId, String storedSenderName) {
         if (storedSenderName != null && !storedSenderName.isBlank()) {
@@ -35,24 +39,30 @@ public class HouseChatService {
             return "House 멤버";
         }
 
-        List<String> nicknames = jdbcTemplate.query(
-                """
-                SELECT nickname
-                FROM user_svc.users
-                WHERE id = ?
-                """,
-                (rs, rowNum) -> rs.getString("nickname"),
-                senderId
-        );
+        return displayName(senderId, userClient.findNickname(senderId));
+    }
 
-        if (!nicknames.isEmpty()) {
-            String nickname = nicknames.get(0);
-
-            if (nickname != null && !nickname.isBlank()) {
-                return nickname;
-            }
+    /** 목록처럼 여러 건을 한 번에 그릴 때. 닉네임을 미리 받아둔 맵에서 꺼낸다. */
+    private String resolveSenderName(
+            Long senderId,
+            String storedSenderName,
+            Map<Long, String> nicknames
+    ) {
+        if (storedSenderName != null && !storedSenderName.isBlank()) {
+            return storedSenderName;
         }
 
+        if (senderId == null) {
+            return "House 멤버";
+        }
+
+        return displayName(senderId, nicknames.get(senderId));
+    }
+
+    private String displayName(Long senderId, String nickname) {
+        if (nickname != null && !nickname.isBlank()) {
+            return nickname;
+        }
         return "사용자 #" + senderId;
     }
 
@@ -89,6 +99,15 @@ public class HouseChatService {
 
         java.util.Collections.reverse(found);
 
+        // senderName 이 비어 있는 메시지의 작성자만 모아 한 번에 조회한다.
+        // 건별로 물으면 50개짜리 목록 하나에 HTTP 왕복이 50번이다.
+        Map<Long, String> nicknames = userClient.findNicknames(
+                found.stream()
+                        .filter(m -> m.getSenderName() == null || m.getSenderName().isBlank())
+                        .map(HouseChatMessage::getSenderId)
+                        .toList()
+        );
+
         return found.stream()
                 .map(message -> ChatMessageDto.builder()
                         .houseId(message.getHouseId())
@@ -96,7 +115,8 @@ public class HouseChatService {
                         .senderName(
                                 resolveSenderName(
                                         message.getSenderId(),
-                                        message.getSenderName()
+                                        message.getSenderName(),
+                                        nicknames
                                 )
                         )
                         .message(message.getMessage())
