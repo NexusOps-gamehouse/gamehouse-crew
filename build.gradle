@@ -1,20 +1,71 @@
 /*
- * crew(House) 서비스.
+ * gamehouse-crew — House(크루) 서비스.
  *
- * 자기 스키마(crew_svc)를 소유하므로 JPA 와 DB 드라이버가 필요하다.
- * House 채팅이 STOMP 라서 websocket 스타터도 함께 쓴다.
- *
- * web / security / validation / actuator / micrometer / jjwt / amqp 는
- * common 이 api 의존성으로 물려준다 — 여기서 다시 선언하지 않는다.
- *
- * ⚠️ 드라이버가 mysql-connector-j 로 되어 있었다. application.yml 의 DB_URL 은
- * jdbc:postgresql:// 이라, 그대로 두면 부팅 때 드라이버를 못 찾아 죽는다.
+ * 모노레포에서는 backend 루트 build.gradle 이 plugin·toolchain·컴파일 옵션을
+ * subprojects 로 일괄 적용하고, common 은 project(':common') 으로 참조했다.
+ * 레포가 갈라지면서 둘 다 사라졌으므로 여기서 직접 선언한다.
  */
-apply plugin: 'org.springframework.boot'
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.5'
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'gg.duo'
+version = '0.0.1-SNAPSHOT'
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+
+repositories {
+    mavenCentral()
+
+    /*
+     * common 이 사는 곳.
+     *
+     * ⚠️ GitHub Packages 는 public 패키지도 읽기에 토큰이 필요하다.
+     *    팀원 전원이 ~/.gradle/gradle.properties 에 아래 두 줄을 넣어야 빌드된다.
+     *      gpr.user=<GitHub 아이디>
+     *      gpr.key=<classic PAT · read:packages>
+     *
+     *    CI 는 조직 secret GPR_TOKEN 을 쓰고, 없으면 GITHUB_TOKEN 으로 넘어간다.
+     */
+    maven {
+        name = 'GitHubPackages'
+        url = 'https://maven.pkg.github.com/NexusOps-gamehouse/gamehouse-common'
+        credentials {
+            username = findProperty('gpr.user') ?: System.getenv('GITHUB_ACTOR')
+            password = findProperty('gpr.key')  ?: System.getenv('GITHUB_TOKEN')
+        }
+    }
+}
+
+/*
+ * -parameters 를 켠다.
+ *
+ * 이벤트 계약이 record 인데, Jackson 이 JSON → record 로 되돌리려면 생성자
+ * 파라미터 이름이 클래스 파일에 남아 있어야 한다. 기본 컴파일은 그 이름을 버린다.
+ * 빌드와 기동은 멀쩡히 성공하고 이벤트 역직렬화만 런타임에 깨지므로 놓치기 쉽다.
+ */
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs << '-parameters'
+    options.encoding = 'UTF-8'
+}
 
 dependencies {
-    implementation project(':common')
+    /*
+     * 모노레포의 project(':common') 이 여기로 바뀐다.
+     * common 이 Spring Boot BOM 을 api 로 노출하므로 starter 에 버전을 적지 않는다.
+     * web / security / validation / actuator / micrometer / jjwt / amqp 도 common 이
+     * api 의존성으로 물려준다 — 여기서 다시 선언하지 않는다.
+     *
+     * ⚠️ 고정 버전이다. common 이 올라가면 여기 버전도 함께 올린다.
+     */
+    implementation 'gg.duo:common:0.1.0'
+
+    // 자기 스키마(crew_svc)를 소유한다.
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // House 채팅이 STOMP 다.
     implementation 'org.springframework.boot:spring-boot-starter-websocket'
 
     /*
@@ -24,9 +75,17 @@ dependencies {
      */
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
 
-    // RabbitMQ STOMP External Broker(Relay) 연동을 위한 Netty 라이브러리 추가
+    // RabbitMQ STOMP External Broker(Relay) 연동에 필요하다.
     implementation 'io.projectreactor.netty:reactor-netty'
 
     runtimeOnly 'org.postgresql:postgresql'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
+tasks.named('test') { useJUnitPlatform() }
