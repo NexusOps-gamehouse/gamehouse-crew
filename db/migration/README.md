@@ -76,7 +76,23 @@ Main RDS 는 Private Subnet 에 있어 밖에서 직접 붙지 못한다.
 `gamehouse` 네임스페이스는 PodSecurity `restricted` 이고 NetworkPolicy 가
 default-deny 이므로, **crew 라벨을 단 임시 파드**를 띄워 그 통신 규칙을 물려받는다.
 
-`db/migration/psql-pod.yaml` 을 쓴다.
+`db/migration/psql-pod.yaml` 을 쓴다. 두 제약을 동시에 통과하도록 만들어 둔 파일이다.
+
+- **라벨 세 개가 다 있어야 한다.** kustomize 의 `labels ... includeSelectors: true` 가
+  NetworkPolicy 의 podSelector 에도 라벨을 끼워 넣는다 — `base` 에서
+  `managed-by: kustomize`, `overlays/prod` 에서 `environment: prod` 가 붙는다.
+  podSelector 는 AND 조건이라 하나라도 빠지면 crew 정책에 매칭되지 않고
+  default-deny 만 걸려 **DNS 부터 막힌다**:
+  `could not translate host name ... Temporary failure in name resolution`
+  → RDS 가 막힌 게 아니라 이름 조회에서 막힌 것이다. 라벨부터 확인할 것.
+
+  라벨은 외우지 말고 **정책에서 읽어와 맞춘다.** 오버레이가 바뀌면 값도 바뀐다.
+  ```bash
+  kubectl get netpol crew -n gamehouse -o jsonpath='{.spec.podSelector}'
+  ```
+- **securityContext 네 가지**(`runAsNonRoot` / `allowPrivilegeEscalation: false` /
+  `capabilities.drop: [ALL]` / `seccompProfile`)가 없으면 파드 생성 자체가 거부된다:
+  `violates PodSecurity "restricted:latest"`. `kubectl run` 기본값으로는 안 된다.
 
 ```bash
 kubectl apply -f db/migration/psql-pod.yaml
@@ -97,6 +113,14 @@ kubectl exec -i psql-seed -n gamehouse -- psql -c \
 
 # 반드시 정리 — DB 접속 정보를 들고 있는 파드다
 kubectl delete pod psql-seed -n gamehouse
+```
+
+막히면 순서대로 확인한다.
+
+```bash
+kubectl get pod psql-seed -n gamehouse --show-labels          # 라벨 두 개 다 있나
+kubectl get netpol crew -n gamehouse -o jsonpath='{.spec.podSelector}'   # 정책이 요구하는 라벨
+kubectl describe pod psql-seed -n gamehouse | tail -20        # Pending 이면 노드 자리 문제
 ```
 
 ## 상품 이미지에 대해

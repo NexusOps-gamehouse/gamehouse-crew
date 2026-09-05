@@ -3,10 +3,24 @@
 # 왜 이 파일이 필요한가 — Main RDS 는 Private DB Subnet 에 있어 클러스터 밖에서
 # 직접 붙지 못한다. 그리고 gamehouse 네임스페이스에는 두 가지 제약이 있다.
 #
-#   1) NetworkPolicy 가 default-deny 다. 아무 라벨 없는 파드는 RDS 로 나가지 못한다.
-#      -> metadata.labels 의 app.kubernetes.io/name: crew 가 crew 의 egress 규칙
-#         (RDS 5432 · DNS) 을 그대로 물려받게 해 준다. 이 라벨을 빼면 연결이 조용히
-#         타임아웃된다.
+#   1) NetworkPolicy 가 default-deny 다(networkpolicy-baseline.yaml, podSelector: {}).
+#      아무 라벨 없는 파드는 DNS 조차 못 쓴다.
+#      -> metadata.labels 의 두 줄이 crew 의 egress 규칙(RDS 5432 · DNS)을 물려받게 한다.
+#
+#      ⚠️ 라벨이 세 개인 이유 — kustomize 의 `labels ... includeSelectors: true` 가
+#         NetworkPolicy 의 podSelector 에까지 라벨을 끼워 넣는다. 두 군데서 붙는다:
+#           base/kustomization.yaml        -> app.kubernetes.io/managed-by: kustomize
+#           overlays/prod/kustomization.yaml -> app.kubernetes.io/environment: prod
+#         그래서 prod 클러스터에 실제로 적용된 crew 정책의 셀렉터는 세 개다.
+#         podSelector 는 AND 조건이라 하나라도 빠지면 crew 정책에 매칭되지 않고
+#         default-deny 만 걸려서 DNS 부터 막힌다:
+#           `could not translate host name ... Temporary failure in name resolution`
+#         RDS 가 막힌 게 아니라 이름 조회에서 막힌 것이다(2026-09-05 에 두 번 겪음).
+#
+#         ✅ 라벨을 외우지 말고 매번 정책에서 읽어와 맞춘다:
+#             kubectl get netpol crew -n gamehouse -o jsonpath='{.spec.podSelector}'
+#         여기 나오는 matchLabels 를 그대로 아래 metadata.labels 에 복사하면 된다.
+#         dev 오버레이에서 쓸 때도 environment 값이 달라지므로 반드시 확인할 것.
 #
 #   2) PodSecurity 가 restricted 다. securityContext 를 명시하지 않으면
 #      "violates PodSecurity restricted:latest" 로 생성 자체가 거부된다.
@@ -23,7 +37,10 @@ metadata:
   name: psql-seed
   namespace: gamehouse
   labels:
+    # kubectl get netpol crew -n gamehouse -o jsonpath='{.spec.podSelector}' 와 일치해야 한다
     app.kubernetes.io/name: crew
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/environment: prod
 spec:
   restartPolicy: Never
   securityContext:
