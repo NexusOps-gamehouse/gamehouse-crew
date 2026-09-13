@@ -31,20 +31,25 @@ flowchart LR
     CREW["gamehouse-crew<br/>:8086"]
     USER["gamehouse-user<br/>:8081"]
     MATCH["gamehouse-match<br/>:8085"]
-    MQ[("RabbitMQ")]
+    MQ[("RabbitMQ<br/>gamehouse.events")]
     DB[("PostgreSQL<br/>crew_svc")]
 
     FE -->|"/api/crew · /api/houses · /api/shop"| CREW
     FE -.->|"/ws-house (STOMP)"| CREW
-    CREW -->|"닉네임 조회"| USER
+    CREW -->|"닉네임 조회 (REST)"| USER
     MATCH -->|"MatchFoundEvent"| MQ
-    MQ --> CREW
-    CREW -->|"crewFormed · notify"| MQ
+    MQ -->|"같이 한 기록 복제"| CREW
+    CREW -->|"NotificationRequestedEvent"| MQ
+    MQ -->|"알림 생성 요청"| USER
     CREW --> DB
 ```
 
-crew가 직접 호출하는 서비스는 **user 하나**다. 나머지 서비스와는 RabbitMQ 이벤트로만 엮인다.
-다른 서비스의 테이블을 직접 조회하지 않고 `crew_svc` 스키마만 소유한다.
+**이벤트로 주고받는 이유는 DB 권한 경계 때문이다.** 서비스마다 DB 계정과 스키마가 갈라져
+있어서, crew는 `match_svc`도 `user_svc`도 읽거나 쓸 수 없다. 그래서 추천에 필요한
+"누가 누구와 같이 게임했는지"는 `MatchFoundEvent`로 받아 `crew_svc`에 복제해 두고,
+알림은 직접 넣는 대신 `NotificationRequestedEvent`로 user에게 요청만 보낸다.
+
+crew가 직접 호출하는 서비스는 닉네임 조회를 위한 **user 하나**뿐이다.
 
 ---
 
